@@ -27,6 +27,7 @@ CREDS_JSON = os.path.join(HOME, ".claude", ".credentials.json")
 WEBFLOW_MCP_URL = "https://mcp.webflow.com/mcp"
 PROJECTS_ROOT = os.path.join(HOME, "Bureau", "Webflow")
 LOCK = os.path.join(APP_DIR, "lock")
+SITES_CACHE = os.path.join(APP_DIR, "sites-cache.json")
 NAME_RE = re.compile(r"^wf-[A-Za-z0-9._-]{1,64}$")
 SAFE_RE = re.compile(r"^[A-Za-z0-9._ -]{1,80}$")
 
@@ -61,10 +62,12 @@ def read_state():
             if not isinstance(entry, dict) or entry.get("url") != WEBFLOW_MCP_URL:
                 continue
             tok = creds.get(credkey(name, entry), {})
+            cached = load(SITES_CACHE).get(name) or {}
             servers.append({
                 "name": name,
                 "scope": scope,                      # "user" ou chemin du dossier
                 "authorized": bool(tok.get("accessToken")),
+                "sites": cached.get("sites"),
             })
 
     collect(cfg.get("mcpServers"), "user")
@@ -126,23 +129,77 @@ def token_for(name):
     return None
 
 
+def _cache_put(name, result):
+    cache = load(SITES_CACHE)
+    cache[name] = dict(result, ts=int(time.time()))
+    tmp = SITES_CACHE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(cache, f)
+    os.replace(tmp, SITES_CACHE)
+
+
+MCP_UA = "claude-code/2.1.247 (patchbay-webflow)"  # UA nu type python-urllib -> 403 WAF
+
+
+def _mcp_post(tok, payload, sid=None, expect=True):
+    headers = {"Content-Type": "application/json",
+               "Accept": "application/json, text/event-stream",
+               "Authorization": "Bearer " + tok,
+               "User-Agent": MCP_UA,
+               "MCP-Protocol-Version": "2025-03-26"}
+    if sid:
+        headers["Mcp-Session-Id"] = sid
+    req = urllib.request.Request(WEBFLOW_MCP_URL, json.dumps(payload).encode(), headers)
+    with urllib.request.urlopen(req, timeout=20) as r:
+        new_sid = r.headers.get("Mcp-Session-Id") or sid
+        ctype = r.headers.get("Content-Type", "")
+        raw = r.read().decode()
+    if not expect:
+        return new_sid, None
+    if "event-stream" in ctype:
+        for line in raw.splitlines():
+            if line.startswith("data:"):
+                try:
+                    obj = json.loads(line[5:])
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("id") == payload.get("id"):
+                    return new_sid, obj
+        return new_sid, None
+    return new_sid, json.loads(raw) if raw else None
+
+
 def webflow_sites(name):
-    """Périmètre réel du token : liste des sites que Webflow accepte de montrer."""
+    """Périmètre réel du token, demandé au serveur MCP (seule audience qui l'accepte)."""
     tok = token_for(name)
     if not tok:
         return {"error": "Pas de token pour ce serveur."}
-    req = urllib.request.Request(
-        "https://api.webflow.com/v2/sites",
-        headers={"Authorization": "Bearer " + tok, "User-Agent": "patchbay-webflow"})
     try:
-        with urllib.request.urlopen(req, timeout=8) as r:
-            data = json.load(r)
-        return {"sites": [{"name": s.get("displayName") or s.get("shortName", "?"),
-                           "id": s.get("id", "")} for s in data.get("sites", [])]}
+        sid, _ = _mcp_post(tok, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                                 "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                                            "clientInfo": {"name": "patchbay-webflow", "version": "1.0"}}})
+        _mcp_post(tok, {"jsonrpc": "2.0", "method": "notifications/initialized"}, sid, expect=False)
+        _, res = _mcp_post(tok, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                                 "params": {"name": "data_sites_tool",
+                                            "arguments": {"actions": [{"label": "périmètre", "list_sites": {}}]}}}, sid)
+        payload = (res or {}).get("result", {})
+        if payload.get("isError"):
+            return {"error": "Le serveur MCP a refusé l'appel."}
+        for c in payload.get("content", []):
+            if c.get("type") != "text":
+                continue
+            data = json.loads(c["text"])
+            sites = (data.get("result") or {}).get("sites", [])
+            result = {"sites": [{"name": s.get("displayName") or s.get("shortName", "?"),
+                                 "id": s.get("id", ""),
+                                 "shortName": s.get("shortName", "")} for s in sites]}
+            _cache_put(name, result)
+            return result
+        return {"error": "Réponse MCP sans contenu lisible."}
     except urllib.error.HTTPError as e:
-        if e.code in (401, 403):
-            return {"restricted": True}
-        return {"error": "Webflow a répondu HTTP %d." % e.code}
+        if e.code == 401:
+            return {"error": "Token refusé — refaire /mcp → Authenticate sur ce serveur."}
+        return {"error": "Serveur MCP : HTTP %d." % e.code}
     except Exception as e:
         return {"error": "Injoignable : %s" % e.__class__.__name__}
 
@@ -172,6 +229,14 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _route(self):
+        if self.path == "/favicon.ico":
+            with open(os.path.join(APP_DIR, "icon.svg"), "rb") as f:
+                body = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "image/svg+xml")
+            self.end_headers()
+            self.wfile.write(body)
+            return None
         if not self.path.startswith("/" + SECRET):
             self.send_error(404)
             return None
@@ -242,6 +307,22 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 ok, msg = False, "Dossier du serveur introuvable."
             self._json({"ok": ok, "msg": msg})
+        elif route == "/api/vscode":
+            known = {s["scope"] for s in read_state()["servers"]} | \
+                    {f["path"] for f in read_state()["folders"]}
+            if d in known and os.path.isdir(d):
+                subprocess.Popen(["code", d], start_new_session=True)
+                self._json({"ok": True, "msg": ""})
+            else:
+                self._json({"ok": False, "msg": "Dossier inconnu."})
+        elif route == "/api/designer":
+            short = str(payload.get("shortName", ""))
+            if re.match(r"^[a-z0-9][a-z0-9-]{0,80}$", short):
+                subprocess.Popen(["xdg-open", "https://webflow.com/design/" + short],
+                                 start_new_session=True)
+                self._json({"ok": True, "msg": ""})
+            else:
+                self._json({"ok": False, "msg": "shortName invalide."})
         elif route == "/api/terminal":
             ok = os.path.isdir(d) and open_terminal(d)
             self._json({"ok": ok, "msg": "" if ok else "Aucun terminal lançable trouvé."})

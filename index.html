@@ -190,6 +190,7 @@ const api = (p, opt) => fetch(p, opt).then(r => r.json());
 const esc = s => s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 const ui = { expanded:new Set(), confirm:new Set(), sites:new Map(), msg:new Map(), justAdded:null };
+const autoChecked = new Set();
 let state = null, lastJson = "";
 
 function shortDir(p, home){
@@ -227,8 +228,12 @@ function render(){
         const acts = [];
         if (!s.authorized && s.scope !== "user")
           acts.push(`<button class="btn primary" data-act="term" data-name="${esc(s.name)}">Ouvrir le terminal ici</button>`);
+        if (s.scope !== "user")
+          acts.push(`<button class="btn" data-act="vscode" data-name="${esc(s.name)}">VS Code</button>`);
         if (s.authorized)
           acts.push(`<button class="btn" data-act="sites" data-name="${esc(s.name)}">Vérifier le périmètre</button>`);
+        (s.sites || []).forEach(site => { if (site.shortName)
+          acts.push(`<button class="btn" data-act="designer" data-name="${esc(s.name)}" data-short="${esc(site.shortName)}">Ouvrir le Designer — ${esc(site.name)}</button>`); });
         acts.push(ui.confirm.has(s.name)
           ? `<button class="btn confirm" data-act="rm" data-name="${esc(s.name)}">Confirmer le débranchement</button>`
           : `<button class="btn danger" data-act="askrm" data-name="${esc(s.name)}">Débrancher</button>`);
@@ -240,7 +245,10 @@ function render(){
         <button class="jackrow" data-act="toggle" data-name="${esc(s.name)}" aria-expanded="${open}">
           <span class="led"></span>
           <span><span class="jackname">${esc(s.name)}</span>
-            <div class="jackdir">${esc(shortDir(s.scope, home))}</div></span>
+            <div class="jackdir">${esc(shortDir(s.scope, home))}${
+              s.sites && s.sites.length === 1 ? " → " + esc(s.sites[0].name) + " ✓"
+              : s.sites && s.sites.length > 1 ? " → ⚠ " + s.sites.length + " sites"
+              : ""}</div></span>
           ${badge}
           <span class="chev">▸</span>
         </button>${panel}</div>`;
@@ -250,7 +258,9 @@ function render(){
   const orph = $("#orphans");
   orph.hidden = !orphans.length;
   if (orphans.length)
-    orph.innerHTML = `Tokens en réserve : <b>${orphans.map(esc).join(", ")}</b> — réutilisés tels quels si tu rebranches ces noms.`;
+    orph.innerHTML = `Tokens en réserve : ` + orphans.map(o =>
+      `<button class="btn" data-act="rewire" data-name="${esc(o)}" style="padding:3px 9px;font-size:12px">${esc(o)} ↩</button>`
+    ).join(" ") + ` — un clic pré-remplit le branchement, le token est réutilisé sans ré-autorisation.`;
 
   // dossiers proposés dans le formulaire
   const sel = $("#f-dir");
@@ -278,6 +288,12 @@ async function refresh(){
     const st = await api("api/state");
     const j = JSON.stringify(st);
     if (j !== lastJson){ lastJson = j; state = st; render(); }
+    for (const s of st.servers){
+      if (s.authorized && !s.sites && !autoChecked.has(s.name)){
+        autoChecked.add(s.name);
+        api("api/sites?name=" + encodeURIComponent(s.name)).then(() => { lastJson = ""; refresh(); });
+      }
+    }
   }catch(e){ /* serveur parti : la fenêtre peut être fermée */ }
 }
 
@@ -286,6 +302,12 @@ document.addEventListener("click", async e => {
   if (!b) return;
   const name = b.dataset.name, act = b.dataset.act;
   const srv = state.servers.find(s => s.name === name);
+  if (act === "rewire"){
+    $("#addbtn").hidden = true; $("#addform").hidden = false;
+    const n = $("#f-name"); n.value = name; n.dataset.touched = "1";
+    $("#f-dir").focus();
+    return;
+  }
   if (act === "toggle"){
     ui.expanded.has(name) ? ui.expanded.delete(name) : ui.expanded.add(name);
     ui.confirm.delete(name); render();
@@ -301,6 +323,10 @@ document.addEventListener("click", async e => {
     ui.msg.set(name, r.ok ? `<div class="note">Terminal ouvert — la suite se passe là-bas.</div>`
                           : `<div class="err">${esc(r.msg)}</div>`);
     render();
+  } else if (act === "vscode"){
+    await api("api/vscode", {method:"POST", body:JSON.stringify({dir:srv.scope})});
+  } else if (act === "designer"){
+    await api("api/designer", {method:"POST", body:JSON.stringify({shortName:b.dataset.short})});
   } else if (act === "sites"){
     ui.sites.set(name, `<div class="note">Interrogation de Webflow…</div>`); render();
     const r = await api("api/sites?name=" + encodeURIComponent(name));
