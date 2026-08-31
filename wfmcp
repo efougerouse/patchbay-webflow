@@ -89,17 +89,17 @@ cmd_check() {
     if ! tok=$(token_of "$name"); then
       echo "$name : pas de token"; continue
     fi
-    local body http
-    body=$(curl -s -o /tmp/wfmcp.$$ -w '%{http_code}' \
-      -H "Authorization: Bearer $tok" -H 'accept-version: 2.0.0' \
-      https://api.webflow.com/v2/sites) || true
-    http=$body
+    local body http out
+    out=$(mktemp)
+    # token passé par stdin (-K -) : jamais dans les arguments, invisible dans ps
+    http=$(printf 'header = "Authorization: Bearer %s"\n' "$tok" | \
+      curl -s -K - -o "$out" -w '%{http_code}' https://api.webflow.com/v2/sites) || true
     case "$http" in
-      200) echo "$name : $(jq -r '[.sites[] | .displayName + " (" + .id + ")"] | join(", ")' /tmp/wfmcp.$$)" ;;
+      200) echo "$name : $(jq -r '[.sites[] | .displayName + " (" + .id + ")"] | join(", ")' "$out")" ;;
       401|403) echo "$name : token vivant mais restreint au serveur MCP (audience) — périmètre vérifiable seulement via /mcp dans Claude Code" ;;
-      *)   echo "$name : HTTP $http — $(head -c 200 /tmp/wfmcp.$$)" ;;
+      *)   echo "$name : HTTP $http — $(head -c 200 "$out")" ;;
     esac
-    rm -f /tmp/wfmcp.$$
+    rm -f "$out"
   done
 }
 
