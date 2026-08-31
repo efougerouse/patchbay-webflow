@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Patchbay Webflow</title>
+<style>
+  :root{
+    --ink:#0D1117; --panel:#151C26; --panel2:#10161F; --line:#26303F;
+    --txt:#E9EEF5; --muted:#8B95A7; --faint:#5B6575;
+    --live:#4E9CFF; --wait:#E8A33D; --danger:#E0604C;
+    --mono:'Ubuntu Mono',ui-monospace,monospace;
+    --sans:'Ubuntu',system-ui,sans-serif;
+    --gut:46px; /* gouttière du bus */
+  }
+  *{box-sizing:border-box}
+  [hidden]{display:none!important}
+  html{color-scheme:dark}
+  body{margin:0;background:var(--ink);color:var(--txt);font:15px/1.45 var(--sans);
+       min-height:100vh;padding:26px 28px 34px}
+  ::selection{background:rgba(78,156,255,.35)}
+  button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+  :focus-visible{outline:2px solid var(--live);outline-offset:2px;border-radius:4px}
+
+  /* ── entête ─────────────────────────────── */
+  header{display:flex;align-items:center;gap:16px;margin-bottom:26px}
+  header img{width:52px;height:52px}
+  .eyebrow{font:600 11px/1 var(--mono);letter-spacing:.22em;color:var(--faint);
+           text-transform:uppercase;margin-bottom:6px}
+  h1{margin:0;font-family:var(--sans);font-stretch:condensed;font-weight:800;
+     font-size:34px;line-height:.9;letter-spacing:.01em;text-transform:uppercase}
+  .sum{margin-left:auto;text-align:right;font-family:var(--mono);font-size:13px;color:var(--muted)}
+  .sum b{display:block;color:var(--txt);font-size:15px}
+
+  /* ── la baie ────────────────────────────── */
+  .board{background:var(--panel2);border:1px solid var(--line);border-radius:14px;
+         padding:18px 18px 8px;overflow:hidden}
+  .root{position:relative;padding-left:var(--gut);height:34px;display:flex;align-items:center;gap:10px}
+  .root .dot{position:absolute;left:12px;top:50%;width:16px;height:16px;transform:translateY(-50%);
+             border-radius:50%;background:var(--live);
+             box-shadow:0 0 0 4px rgba(78,156,255,.18)}
+  .root .dot::after{content:"";position:absolute;inset:5px;border-radius:50%;background:var(--ink)}
+  .root b{font-family:var(--mono);font-size:15px}
+  .root span{color:var(--faint);font-size:12.5px}
+
+  /* chaque rangée dessine son segment de bus */
+  .jack{position:relative;padding:0 0 0 var(--gut)}
+  .jack::before{ /* le bus continue vers la rangée suivante */
+    content:"";position:absolute;left:19px;top:18px;bottom:-8px;border-left:2px solid var(--live)}
+  .jack::after{ /* descente + coude vers la LED */
+    content:"";position:absolute;left:19px;top:-8px;height:26px;width:27px;
+    border-left:2px solid var(--live);border-bottom:2px solid var(--live);
+    border-bottom-left-radius:13px}
+  .jack:last-of-type::before{display:none} /* le bus s'arrête au dernier coude */
+  .jack.wait::before,.jack.wait::after{border-color:rgba(232,163,61,.75)}
+  .jack.wait ~ .jack::before{border-color:rgba(232,163,61,.75)}
+
+  .jackrow{display:flex;align-items:center;gap:12px;width:100%;text-align:left;
+           padding:12px 10px 12px 0;border-radius:10px}
+  .jackrow:hover{background:rgba(255,255,255,.025)}
+  .led{width:11px;height:11px;border-radius:50%;flex:none;background:var(--live);
+       box-shadow:0 0 8px rgba(78,156,255,.7)}
+  .wait .led{background:none;border:2.5px solid var(--wait);box-shadow:none;
+             width:8px;height:8px}
+  .jackname{font-family:var(--mono);font-size:15.5px;font-weight:700}
+  .jackdir{color:var(--faint);font-family:var(--mono);font-size:12px;margin-top:1px;
+           overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:340px}
+  .badge{margin-left:auto;flex:none;font:700 10.5px/1 var(--mono);letter-spacing:.14em;
+         padding:5px 9px;border-radius:99px}
+  .badge.on{color:var(--live);background:rgba(78,156,255,.13)}
+  .badge.off{color:var(--wait);border:1px solid rgba(232,163,61,.5)}
+  .chev{flex:none;color:var(--faint);transition:transform .18s}
+  .open .chev{transform:rotate(90deg)}
+
+  .panel{margin:0 10px 14px 24px;padding:14px 16px;background:var(--panel);
+         border:1px solid var(--line);border-radius:10px;font-size:13.5px}
+  .panel .kv{color:var(--muted);font-family:var(--mono);font-size:12.5px;margin-bottom:10px}
+  .panel .kv b{color:var(--txt);font-weight:400}
+  .steps{margin:0 0 12px;padding-left:20px;color:var(--muted)}
+  .steps li{margin:3px 0}
+  .steps .mono{font-family:var(--mono);color:var(--txt)}
+  .steps em{color:var(--wait);font-style:normal;font-weight:700}
+  .acts{display:flex;gap:8px;flex-wrap:wrap}
+  .btn{padding:7px 13px;border-radius:8px;border:1px solid var(--line);
+       background:var(--panel2);font-size:13px}
+  .btn:hover{border-color:var(--faint)}
+  .btn.primary{background:var(--live);border-color:var(--live);color:#0A0F16;font-weight:700}
+  .btn.primary:hover{filter:brightness(1.1)}
+  .btn.danger{color:var(--danger)}
+  .btn.danger:hover{border-color:var(--danger)}
+  .btn.confirm{background:var(--danger);border-color:var(--danger);color:#fff;font-weight:700}
+  .sites{margin-top:12px;display:flex;gap:6px;flex-wrap:wrap}
+  .site{font-family:var(--mono);font-size:12px;padding:5px 10px;border-radius:7px;
+        background:rgba(78,156,255,.1);color:var(--txt)}
+  .site span{color:var(--faint)}
+  .note,.err{margin-top:10px;font-size:12.5px;color:var(--muted)}
+  .err{color:var(--danger)}
+
+  .empty{padding:22px 10px 26px var(--gut);color:var(--muted)}
+  .orphans{padding:10px 10px 12px var(--gut);color:var(--faint);font-size:12.5px}
+  .orphans b{font-family:var(--mono);color:var(--muted);font-weight:400}
+
+  /* ── brancher un projet ─────────────────── */
+  .addwrap{margin-top:16px}
+  #addbtn{width:100%;padding:13px;border:1.5px dashed var(--line);border-radius:12px;
+          color:var(--muted);font-size:14.5px}
+  #addbtn:hover{border-color:var(--live);color:var(--txt)}
+  #addform{background:var(--panel2);border:1px solid var(--line);border-radius:12px;
+           padding:18px;display:grid;gap:14px}
+  #addform label{display:grid;gap:6px;font-size:12.5px;color:var(--muted)}
+  #addform select,#addform input[type=text]{
+    background:var(--panel);border:1px solid var(--line);border-radius:8px;color:var(--txt);
+    padding:9px 11px;font:14px var(--mono)}
+  .scopes{display:flex;gap:16px;font-size:13px;color:var(--muted)}
+  #addform .scopes label{display:flex;align-items:center;gap:7px}
+  .scopes input{accent-color:var(--live)}
+  .formacts{display:flex;gap:10px;align-items:center}
+  #addmsg{font-size:12.5px;color:var(--danger);font-family:var(--mono)}
+
+  footer{margin-top:22px;color:var(--faint);font-size:12px;line-height:1.5;
+         padding-left:4px}
+
+  @media (max-width:560px){
+    body{padding:16px}
+    .jackdir{max-width:170px}
+    .sum{display:none}
+  }
+  @media (prefers-reduced-motion:no-preference){
+    .board{animation:rise .35s ease-out}
+    @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+    .wait .led{animation:pulse 1.6s ease-in-out infinite}
+    @keyframes pulse{50%{box-shadow:0 0 0 5px rgba(232,163,61,.15)}}
+  }
+</style>
+</head>
+<body>
+<header>
+  <img src="icon.svg" alt="">
+  <div>
+    <div class="eyebrow">Claude Code ⇄ Webflow MCP</div>
+    <h1>Patchbay</h1>
+  </div>
+  <div class="sum" id="sum"></div>
+</header>
+
+<main>
+  <section class="board" aria-live="polite">
+    <div class="root">
+      <span class="dot"></span>
+      <b>Claude Code</b>
+      <span>un token OAuth par jack, chacun scopé à son site</span>
+    </div>
+    <div id="rows"></div>
+    <div class="orphans" id="orphans" hidden></div>
+  </section>
+
+  <section class="addwrap">
+    <button id="addbtn">＋ Brancher un projet</button>
+    <form id="addform" hidden>
+      <label>Dossier du projet
+        <select id="f-dir"></select>
+      </label>
+      <label id="freewrap" hidden>Chemin du dossier
+        <input type="text" id="f-free" placeholder="/home/…" spellcheck="false">
+      </label>
+      <label>Nom du serveur MCP
+        <input type="text" id="f-name" spellcheck="false">
+      </label>
+      <div class="scopes" role="radiogroup" aria-label="Portée">
+        <label><input type="radio" name="scope" value="local" checked> Ce dossier seulement — recommandé</label>
+        <label><input type="radio" name="scope" value="user"> Partout</label>
+      </div>
+      <div class="formacts">
+        <button type="submit" class="btn primary">Brancher</button>
+        <button type="button" class="btn" id="f-cancel">Annuler</button>
+        <span id="addmsg"></span>
+      </div>
+    </form>
+  </section>
+
+  <footer>
+    Le connecteur claude.ai « Webflow » reste global (workspace entier) et se gère sur claude.ai, pas ici.<br>
+    Débrancher un jack garde son token en réserve : rebrancher le même nom ne redemande pas d'autorisation.
+  </footer>
+</main>
+
+<script>
+const $ = (s, el=document) => el.querySelector(s);
+const api = (p, opt) => fetch(p, opt).then(r => r.json());
+const esc = s => s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+const ui = { expanded:new Set(), confirm:new Set(), sites:new Map(), msg:new Map(), justAdded:null };
+let state = null, lastJson = "";
+
+function shortDir(p, home){
+  if (p === "user") return "partout (scope user)";
+  if (p === home) return "~ — ton home, pas un dossier projet";
+  return p.replace(home, "~");
+}
+
+function render(){
+  const { servers, orphans, home } = state;
+  const on = servers.filter(s => s.authorized).length;
+  const off = servers.length - on;
+  $("#sum").innerHTML = `<b>${on} branché${on>1?"s":""}</b>${off ? off + " en attente d'autorisation" : "périmètres verrouillés par Webflow"}`;
+
+  const rows = $("#rows");
+  if (!servers.length){
+    rows.innerHTML = `<div class="empty">Aucun projet branché pour l'instant.<br>
+      Chaque projet reçoit sa propre clé, cochée sur un seul site Webflow.</div>`;
+  } else {
+    rows.innerHTML = servers.map(s => {
+      const open = ui.expanded.has(s.name);
+      const stateCls = s.authorized ? "" : " wait";
+      const badge = s.authorized
+        ? `<span class="badge on">BRANCHÉ</span>`
+        : `<span class="badge off">À AUTORISER</span>`;
+      let panel = "";
+      if (open){
+        const kv = `<div class="kv">dossier <b>${esc(shortDir(s.scope, home))}</b></div>`;
+        const steps = s.authorized ? "" : `
+          <ol class="steps">
+            <li>Ouvre le terminal ici — Claude Code se lance dans le bon dossier</li>
+            <li>Tape <span class="mono">/mcp</span> → <span class="mono">${esc(s.name)}</span> → Authenticate</li>
+            <li>Dans le navigateur : coche <em>uniquement</em> le site de ce projet, puis Authorize</li>
+          </ol>`;
+        const acts = [];
+        if (!s.authorized && s.scope !== "user")
+          acts.push(`<button class="btn primary" data-act="term" data-name="${esc(s.name)}">Ouvrir le terminal ici</button>`);
+        if (s.authorized)
+          acts.push(`<button class="btn" data-act="sites" data-name="${esc(s.name)}">Vérifier le périmètre</button>`);
+        acts.push(ui.confirm.has(s.name)
+          ? `<button class="btn confirm" data-act="rm" data-name="${esc(s.name)}">Confirmer le débranchement</button>`
+          : `<button class="btn danger" data-act="askrm" data-name="${esc(s.name)}">Débrancher</button>`);
+        const sites = ui.sites.get(s.name) || "";
+        const msg = ui.msg.get(s.name) || "";
+        panel = `<div class="panel">${kv}${steps}<div class="acts">${acts.join("")}</div>${sites}${msg}</div>`;
+      }
+      return `<div class="jack${stateCls}${open ? " open" : ""}">
+        <button class="jackrow" data-act="toggle" data-name="${esc(s.name)}" aria-expanded="${open}">
+          <span class="led"></span>
+          <span><span class="jackname">${esc(s.name)}</span>
+            <div class="jackdir">${esc(shortDir(s.scope, home))}</div></span>
+          ${badge}
+          <span class="chev">▸</span>
+        </button>${panel}</div>`;
+    }).join("");
+  }
+
+  const orph = $("#orphans");
+  orph.hidden = !orphans.length;
+  if (orphans.length)
+    orph.innerHTML = `Tokens en réserve : <b>${orphans.map(esc).join(", ")}</b> — réutilisés tels quels si tu rebranches ces noms.`;
+
+  // dossiers proposés dans le formulaire
+  const sel = $("#f-dir");
+  const cur = sel.value;
+  sel.innerHTML = state.folders.map(f =>
+    `<option value="${esc(f.path)}" ${f.wired ? "disabled" : ""}>${esc(f.label)}${f.wired ? " — déjà branché" : ""}</option>`
+  ).join("") + `<option value="__free__">Autre dossier…</option>`;
+  if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+  syncName();
+}
+
+function syncName(){
+  const sel = $("#f-dir");
+  $("#freewrap").hidden = sel.value !== "__free__";
+  const base = sel.value === "__free__"
+    ? ($("#f-free").value.split("/").filter(Boolean).pop() || "")
+    : (sel.value.split("/").pop() || "");
+  const auto = "wf-" + base.replace(/\s+/g, "-").replace(/[^A-Za-z0-9._-]/g, "");
+  const nameEl = $("#f-name");
+  if (!nameEl.dataset.touched) nameEl.value = base ? auto : "";
+}
+
+async function refresh(){
+  try{
+    const st = await api("api/state");
+    const j = JSON.stringify(st);
+    if (j !== lastJson){ lastJson = j; state = st; render(); }
+  }catch(e){ /* serveur parti : la fenêtre peut être fermée */ }
+}
+
+document.addEventListener("click", async e => {
+  const b = e.target.closest("[data-act]");
+  if (!b) return;
+  const name = b.dataset.name, act = b.dataset.act;
+  const srv = state.servers.find(s => s.name === name);
+  if (act === "toggle"){
+    ui.expanded.has(name) ? ui.expanded.delete(name) : ui.expanded.add(name);
+    ui.confirm.delete(name); render();
+  } else if (act === "askrm"){
+    ui.confirm.add(name); render();
+  } else if (act === "rm"){
+    ui.confirm.delete(name);
+    const r = await api("api/remove", {method:"POST", body:JSON.stringify({name, scope:srv.scope})});
+    ui.msg.set(name, r.ok ? "" : `<div class="err">${esc(r.msg)}</div>`);
+    lastJson = ""; refresh();
+  } else if (act === "term"){
+    const r = await api("api/terminal", {method:"POST", body:JSON.stringify({dir:srv.scope})});
+    ui.msg.set(name, r.ok ? `<div class="note">Terminal ouvert — la suite se passe là-bas.</div>`
+                          : `<div class="err">${esc(r.msg)}</div>`);
+    render();
+  } else if (act === "sites"){
+    ui.sites.set(name, `<div class="note">Interrogation de Webflow…</div>`); render();
+    const r = await api("api/sites?name=" + encodeURIComponent(name));
+    let html;
+    if (r.sites) html = r.sites.length
+      ? `<div class="sites">${r.sites.map(s => `<span class="site">${esc(s.name)} <span>${esc(s.id.slice(0,8))}…</span></span>`).join("")}</div>
+         <div class="note">${r.sites.length === 1 ? "Un seul site : le cloisonnement est bon." : r.sites.length + " sites — ce token voit plus large qu'un projet."}</div>`
+      : `<div class="note">Aucun site visible par ce token.</div>`;
+    else if (r.restricted) html = `<div class="note">Token vivant mais réservé au serveur MCP — le périmètre se vérifie dans Claude Code via /mcp.</div>`;
+    else html = `<div class="err">${esc(r.error || "Erreur inconnue")}</div>`;
+    ui.sites.set(name, html); render();
+  }
+});
+
+$("#addbtn").addEventListener("click", () => { $("#addbtn").hidden = true; $("#addform").hidden = false; syncName(); $("#f-dir").focus(); });
+$("#f-cancel").addEventListener("click", () => { $("#addform").hidden = true; $("#addbtn").hidden = false; $("#addmsg").textContent = ""; });
+$("#f-dir").addEventListener("change", syncName);
+$("#f-free").addEventListener("input", syncName);
+$("#f-name").addEventListener("input", e => e.target.dataset.touched = "1");
+
+$("#addform").addEventListener("submit", async e => {
+  e.preventDefault();
+  const dir = $("#f-dir").value === "__free__" ? $("#f-free").value.trim() : $("#f-dir").value;
+  const name = $("#f-name").value.trim();
+  const scope = new FormData(e.target).get("scope");
+  const r = await api("api/add", {method:"POST", body:JSON.stringify({dir, name, scope})});
+  if (r.ok){
+    $("#addform").hidden = true; $("#addbtn").hidden = false;
+    $("#f-name").dataset.touched = ""; $("#addmsg").textContent = "";
+    ui.expanded.add(name); lastJson = ""; refresh();
+  } else {
+    $("#addmsg").textContent = r.msg;
+  }
+});
+
+refresh();
+setInterval(refresh, 4000);
+</script>
+</body>
+</html>

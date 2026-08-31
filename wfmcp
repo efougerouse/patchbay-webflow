@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# wfmcp — un serveur MCP Webflow nommé par projet, chacun avec son propre token OAuth.
+#
+# Claude Code stocke les credentials MCP sous la clé "<nom>|sha256({type,url,headers})[0:16]".
+# Deux serveurs de noms différents pointant la même URL ont donc deux tokens indépendants :
+# c'est ce qui permet de garder N projets Webflow connectés en même temps, sans ré-auth au
+# changement de projet.
+
+set -euo pipefail
+
+URL=https://mcp.webflow.com/mcp
+CREDS="$HOME/.claude/.credentials.json"
+PREFIX=wf-
+
+usage() {
+  cat <<'EOF'
+wfmcp add <projet> [--global]   enregistre wf-<projet> (local au dossier courant ; --global = tous les dossiers)
+wfmcp ls                        liste les serveurs wf-* et l'état de leur token
+wfmcp check [<projet>]          affiche les sites que le token voit réellement
+wfmcp rm <projet> [--global]    supprime l'enregistrement (le token reste, réutilisé au ré-ajout)
+EOF
+}
+
+# clé de credential telle que Claude Code la calcule
+credkey() {
+  python3 - "$1" "$URL" <<'PY'
+import hashlib, json, sys
+name, url = sys.argv[1], sys.argv[2]
+blob = '{"type":"http","url":%s,"headers":{}}' % json.dumps(url)
+print("%s|%s" % (name, hashlib.sha256(blob.encode()).hexdigest()[:16]))
+PY
+}
+
+token_of() {
+  [ -f "$CREDS" ] || return 1
+  jq -er --arg k "$(credkey "$1")" '.mcpOAuth[$k].accessToken // empty' "$CREDS"
+}
+
+cmd_add() {
+  local proj=${1:?nom de projet requis} scope=local
+  [ "${2:-}" = "--global" ] && scope=user
+  local name="$PREFIX$proj"
+  claude mcp add --transport http -s "$scope" "$name" "$URL"
+  echo
+  echo "Serveur « $name » enregistré (scope $scope)."
+  if token_of "$name" >/dev/null 2>&1; then
+    echo "Un token existe déjà pour ce nom : rien à autoriser, il est réutilisé."
+  else
+    echo "Reste à autoriser une seule fois :"
+    echo "  1. lancer  claude  dans ce dossier"
+    echo "  2. taper   /mcp   →  $name  →  Authenticate"
+    echo "  3. dans le navigateur : cocher UNIQUEMENT le site de ce projet, puis Authorize"
+  fi
+}
+
+cmd_rm() {
+  local proj=${1:?nom de projet requis} scope=local
+  [ "${2:-}" = "--global" ] && scope=user
+  claude mcp remove -s "$scope" "$PREFIX$proj"
+}
+
+cmd_ls() {
+  printf '%-24s %-9s %s\n' SERVEUR TOKEN SCOPE
+  python3 - "$PREFIX" "$URL" <<'PY' | while read -r name scope; do
+import json, os, sys
+pre, url = sys.argv[1], sys.argv[2]
+cfg = json.load(open(os.path.expanduser("~/.claude.json")))
+seen = []
+for n, v in (cfg.get("mcpServers") or {}).items():
+    if n.startswith(pre): seen.append((n, "user"))
+for path, pc in (cfg.get("projects") or {}).items():
+    for n, v in (pc.get("mcpServers") or {}).items():
+        if n.startswith(pre): seen.append((n, path))
+for n, s in sorted(seen): print(n, s)
+PY
+    if token_of "$name" >/dev/null 2>&1; then t=oui; else t=MANQUANT; fi
+    printf '%-24s %-9s %s\n' "$name" "$t" "$scope"
+  done
+}
+
+cmd_check() {
+  local names
+  if [ $# -gt 0 ]; then names="$PREFIX$1"; else
+    names=$(jq -r --arg p "$PREFIX" '.mcpOAuth | keys[] | select(startswith($p)) | split("|")[0]' "$CREDS" 2>/dev/null || true)
+  fi
+  [ -n "$names" ] || { echo "Aucun token wf-* trouvé. Autoriser d'abord via /mcp."; return 1; }
+  for name in $names; do
+    local tok
+    if ! tok=$(token_of "$name"); then
+      echo "$name : pas de token"; continue
+    fi
+    local body http
+    body=$(curl -s -o /tmp/wfmcp.$$ -w '%{http_code}' \
+      -H "Authorization: Bearer $tok" -H 'accept-version: 2.0.0' \
+      https://api.webflow.com/v2/sites) || true
+    http=$body
+    case "$http" in
+      200) echo "$name : $(jq -r '[.sites[] | .displayName + " (" + .id + ")"] | join(", ")' /tmp/wfmcp.$$)" ;;
+      401|403) echo "$name : token vivant mais restreint au serveur MCP (audience) — périmètre vérifiable seulement via /mcp dans Claude Code" ;;
+      *)   echo "$name : HTTP $http — $(head -c 200 /tmp/wfmcp.$$)" ;;
+    esac
+    rm -f /tmp/wfmcp.$$
+  done
+}
+
+case "${1:-}" in
+  add)   shift; cmd_add "$@" ;;
+  rm)    shift; cmd_rm "$@" ;;
+  ls)    cmd_ls ;;
+  check) shift; cmd_check "$@" ;;
+  *)     usage; exit 1 ;;
+esac

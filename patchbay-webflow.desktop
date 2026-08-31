@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Patchbay Webflow
+Comment=Connexions MCP Webflow de Claude Code
+Exec=python3 /home/efougerouse/.local/share/patchbay-webflow/app.py
+Icon=/home/efougerouse/.local/share/patchbay-webflow/icon.svg
+Terminal=false
+Categories=Development;Utility;
+Keywords=webflow;mcp;claude;
