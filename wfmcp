@@ -31,9 +31,17 @@ print("%s|%s" % (name, hashlib.sha256(blob.encode()).hexdigest()[:16]))
 PY
 }
 
+# credentials MCP de Claude Code : trousseau sous macOS, fichier ailleurs
+creds_json() {
+  if [ "$(uname)" = Darwin ]; then
+    security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null
+  else
+    [ -f "$CREDS" ] && cat "$CREDS"
+  fi
+}
+
 token_of() {
-  [ -f "$CREDS" ] || return 1
-  jq -er --arg k "$(credkey "$1")" '.mcpOAuth[$k].accessToken // empty' "$CREDS"
+  creds_json | jq -er --arg k "$(credkey "$1")" '.mcpOAuth[$k].accessToken // empty'
 }
 
 cmd_add() {
@@ -81,7 +89,7 @@ PY
 cmd_check() {
   local names
   if [ $# -gt 0 ]; then names="$PREFIX$1"; else
-    names=$(jq -r --arg p "$PREFIX" '.mcpOAuth | keys[] | select(startswith($p)) | split("|")[0]' "$CREDS" 2>/dev/null || true)
+    names=$(creds_json | jq -r --arg p "$PREFIX" '.mcpOAuth | keys[] | select(startswith($p)) | split("|")[0]' 2>/dev/null || true)
   fi
   [ -n "$names" ] || { echo "Aucun token wf-* trouvé. Autoriser d'abord via /mcp."; return 1; }
   for name in $names; do

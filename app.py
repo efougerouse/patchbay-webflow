@@ -10,6 +10,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import signal
 import socket
 import subprocess
@@ -21,11 +22,15 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HOME = os.path.expanduser("~")
+MAC = sys.platform == "darwin"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CLAUDE_JSON = os.path.join(HOME, ".claude.json")
 CREDS_JSON = os.path.join(HOME, ".claude", ".credentials.json")
 WEBFLOW_MCP_URL = "https://mcp.webflow.com/mcp"
-PROJECTS_ROOT = os.path.join(HOME, "Bureau", "Webflow")
+# ~/Bureau sous Linux FR, ~/Desktop sous macOS (que le Finder affiche « Bureau »)
+DESKTOP = next((os.path.join(HOME, d) for d in ("Bureau", "Desktop")
+                if os.path.isdir(os.path.join(HOME, d))), os.path.join(HOME, "Bureau"))
+PROJECTS_ROOT = os.path.join(DESKTOP, "Webflow")
 LOCK = os.path.join(APP_DIR, "lock")
 SITES_CACHE = os.path.join(APP_DIR, "sites-cache.json")
 NAME_RE = re.compile(r"^wf-[A-Za-z0-9._-]{1,64}$")
@@ -43,6 +48,19 @@ def load(path):
         return {}
 
 
+def load_creds():
+    """Credentials MCP de Claude Code : trousseau macOS, sinon ~/.claude/.credentials.json."""
+    if MAC:
+        try:
+            out = subprocess.run(["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+                                 capture_output=True, text=True, timeout=10).stdout
+            if out.strip():
+                return json.loads(out).get("mcpOAuth", {})
+        except Exception:
+            pass
+    return load(CREDS_JSON).get("mcpOAuth", {})
+
+
 def credkey(name, entry):
     """Clé du credential telle que Claude Code la calcule : nom|sha256({type,url,headers})[:16]."""
     blob = json.dumps(
@@ -54,7 +72,7 @@ def credkey(name, entry):
 
 def read_state():
     cfg = load(CLAUDE_JSON)
-    creds = load(CREDS_JSON).get("mcpOAuth", {})
+    creds = load_creds()
 
     servers = []
     def collect(entries, scope):
@@ -116,7 +134,7 @@ def claude_mcp(args, cwd=None):
 
 
 def token_for(name):
-    creds = load(CREDS_JSON).get("mcpOAuth", {})
+    creds = load_creds()
     cfg = load(CLAUDE_JSON)
     pools = [cfg.get("mcpServers") or {}] + \
         [(p or {}).get("mcpServers") or {} for p in (cfg.get("projects") or {}).values()]
@@ -204,7 +222,43 @@ def webflow_sites(name):
         return {"error": "Injoignable : %s" % e.__class__.__name__}
 
 
+def open_url(url):
+    subprocess.Popen(["open" if MAC else "xdg-open", url], start_new_session=True)
+
+
+def open_window(url, size):
+    """Fenêtre Chrome en mode --app ; à défaut, le navigateur par défaut."""
+    chromes = [os.path.join(b, "Google Chrome.app/Contents/MacOS/Google Chrome")
+               for b in ("/Applications", os.path.join(HOME, "Applications"))] if MAC else ["google-chrome"]
+    for c in chromes:
+        try:
+            subprocess.Popen([c, "--app=" + url, "--window-size=" + size], start_new_session=True)
+            return
+        except FileNotFoundError:
+            continue
+    open_url(url)
+
+
+def open_vscode(path):
+    try:
+        subprocess.Popen(["code", path], start_new_session=True)
+        return True
+    except FileNotFoundError:
+        if not MAC:
+            return False
+        subprocess.Popen(["open", "-a", "Visual Studio Code", path], start_new_session=True)
+        return True
+
+
 def open_terminal(cwd):
+    if MAC:
+        line = "cd %s && claude" % shlex.quote(cwd)
+        script = 'tell application "Terminal"\nactivate\ndo script %s\nend tell' % json.dumps(line, ensure_ascii=False)
+        try:
+            subprocess.Popen(["osascript", "-e", script], start_new_session=True)
+            return True
+        except FileNotFoundError:
+            return False
     for cmd in (["gnome-terminal", "--working-directory=" + cwd, "--", "claude"],
                 ["x-terminal-emulator", "-e", "claude"],
                 ["kgx", "--working-directory=" + cwd, "-e", "claude"]):
@@ -311,15 +365,14 @@ class Handler(BaseHTTPRequestHandler):
             known = {s["scope"] for s in read_state()["servers"]} | \
                     {f["path"] for f in read_state()["folders"]}
             if d in known and os.path.isdir(d):
-                subprocess.Popen(["code", d], start_new_session=True)
-                self._json({"ok": True, "msg": ""})
+                ok = open_vscode(d)
+                self._json({"ok": ok, "msg": "" if ok else "VS Code introuvable."})
             else:
                 self._json({"ok": False, "msg": "Dossier inconnu."})
         elif route == "/api/designer":
             short = str(payload.get("shortName", ""))
             if re.match(r"^[a-z0-9][a-z0-9-]{0,80}$", short):
-                subprocess.Popen(["xdg-open", "https://webflow.com/design/" + short],
-                                 start_new_session=True)
+                open_url("https://webflow.com/design/" + short)
                 self._json({"ok": True, "msg": ""})
             else:
                 self._json({"ok": False, "msg": "shortName invalide."})
@@ -346,7 +399,7 @@ def main():
         try:
             pid_s, url = open(LOCK).read().split("\n")[:2]
             os.kill(int(pid_s), 0)
-            subprocess.Popen(["google-chrome", "--app=" + url], start_new_session=True)
+            open_window(url, "760,780")
             return
         except Exception:
             os.remove(LOCK)
@@ -359,11 +412,7 @@ def main():
         os.write(fd, ("%d\n%s\n" % (os.getpid(), url)).encode())
         os.close(fd)
         threading.Thread(target=watchdog, daemon=True).start()
-        try:
-            subprocess.Popen(["google-chrome", "--app=" + url,
-                              "--window-size=760,780"], start_new_session=True)
-        except FileNotFoundError:
-            subprocess.Popen(["xdg-open", url], start_new_session=True)
+        open_window(url, "760,780")
         signal.signal(signal.SIGTERM, lambda *a: os._exit(0))
     else:
         print(url, flush=True)
