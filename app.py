@@ -206,7 +206,10 @@ def webflow_sites(name):
         for c in payload.get("content", []):
             if c.get("type") != "text":
                 continue
-            data = json.loads(c["text"])
+            try:
+                data = json.loads(c["text"])
+            except json.JSONDecodeError:
+                continue  # bloc texte « session_id issued » préfixé par Webflow
             sites = (data.get("result") or {}).get("sites", [])
             result = {"sites": [{"name": s.get("displayName") or s.get("shortName", "?"),
                                  "id": s.get("id", ""),
