@@ -187,7 +187,13 @@ def _mcp_post(tok, payload, sid=None, expect=True):
     return new_sid, json.loads(raw) if raw else None
 
 
-def webflow_sites(name):
+def refresh_token(name):
+    """Le jeton d'accès expire vite ; `claude mcp list` le renouvelle via le refresh token."""
+    scope = next((s["scope"] for s in read_state()["servers"] if s["name"] == name), None)
+    claude_mcp(["list"], cwd=None if scope in (None, "user") else scope)
+
+
+def webflow_sites(name, retry=True):
     """Périmètre réel du token, demandé au serveur MCP (seule audience qui l'accepte)."""
     tok = token_for(name)
     if not tok:
@@ -219,6 +225,9 @@ def webflow_sites(name):
         return {"error": "Réponse MCP sans contenu lisible."}
     except urllib.error.HTTPError as e:
         if e.code == 401:
+            if retry:
+                refresh_token(name)
+                return webflow_sites(name, retry=False)
             return {"error": "Token refusé — refaire /mcp → Authenticate sur ce serveur."}
         return {"error": "Serveur MCP : HTTP %d." % e.code}
     except Exception as e:
